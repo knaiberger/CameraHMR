@@ -22,7 +22,6 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from yacs.config import CfgNode
 from core.configs import dataset_config
 from core.datasets import DataModule
-from core.camerahmr_trainer import CameraHMR
 from core.utils.pylogger import get_pylogger
 from core.utils.misc import task_wrapper, log_hyperparameters
 from pytorch_lightning.strategies import DDPStrategy
@@ -53,6 +52,13 @@ def train(cfg: DictConfig) -> Tuple[dict, dict]:
     datamodule = DataModule(cfg, dataset_cfg)
 
     # Setup model
+    if cfg.MODEL.TYPE == 'smpl':
+        from core.camerahmr_trainer_smpl import CameraHMR
+    elif cfg.MODEL.TYPE == 'smplx':
+        from core.camerahmr_trainer_smplx import CameraHMR
+    else:
+        raise ValueError(f"Unknown model type: {cfg.MODEL.TYPE}")
+        
     model = CameraHMR(cfg)
 
     logger = TensorBoardLogger(os.path.join(cfg.paths.output_dir, 'tensorboard'), name='', version='', default_hp_metric=False)
@@ -84,7 +90,7 @@ def train(cfg: DictConfig) -> Tuple[dict, dict]:
             max_steps=cfg.trainer.max_steps,
             logger=loggers,
             callbacks=callbacks,
-            strategy=DDPStrategy(find_unused_parameters=True),
+            strategy='auto'
         )
 
     object_dict = {

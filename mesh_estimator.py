@@ -10,8 +10,6 @@ from torchvision.transforms import Normalize
 from detectron2.config import LazyConfig
 from core.utils.utils_detectron2 import DefaultPredictor_Lazy
 
-from core.camerahmr_model import CameraHMR
-from core.constants import CHECKPOINT_PATH, CAM_MODEL_CKPT, SMPL_MODEL_PATH, DETECTRON_CKPT, DETECTRON_CFG
 from core.datasets.dataset import Dataset
 from core.utils.renderer_pyrd import Renderer
 from core.utils import recursive_to
@@ -45,15 +43,26 @@ def resize_image(img, target_size):
     return aspect_ratio, final_img
 
 class HumanMeshEstimator:
-    def __init__(self, smpl_model_path=SMPL_MODEL_PATH, threshold=0.25):
+    def __init__(self, model_type='smpl', threshold=0.25):
         self.device = (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+        self.model_type = model_type
         self.model = self.init_model()
         self.detector = self.init_detector(threshold)
         self.cam_model = self.init_cam_model()
-        self.smpl_model = smplx.SMPLLayer(model_path=smpl_model_path, num_betas=NUM_BETAS).to(self.device)
+
+        if self.model_type == 'smpl':
+            from core.constants import SMPL_MODEL_PATH
+            self.body_model = smplx.SMPLLayer(model_path=SMPL_MODEL_PATH, num_betas=NUM_BETAS).to(self.device)
+        elif self.model_type == 'smplx':
+            from core.constants import SMPLX_MODEL_DIR, NUM_BETAS_SMPLX # In the original file, it is SMPL_MODEL_PATH
+            self.body_model = smplx.SMPLXLayer(model_path=SMPLX_MODEL_DIR, num_betas=NUM_BETAS_SMPLX).to(self.device)
+        else:
+            raise ValueError("model_type must be 'smpl' or 'smplx'")
+
         self.normalize_img = Normalize(mean=IMAGE_MEAN, std=IMAGE_STD)
 
     def init_cam_model(self):
+        from core.constants import CAM_MODEL_CKPT
         model = FLNet()
         checkpoint = torch.load(CAM_MODEL_CKPT)['state_dict']
         model.load_state_dict(checkpoint)
@@ -61,13 +70,22 @@ class HumanMeshEstimator:
         return model
 
     def init_model(self):
-        model = CameraHMR.load_from_checkpoint(CHECKPOINT_PATH, strict=False)
+        from core.camerahmr_model import CameraHMR
+        if self.model_type == 'smpl':
+            from core.constants import CHECKPOINT_PATH
+            checkpoint_path = CHECKPOINT_PATH
+        elif self.model_type == 'smplx':
+            from core.constants import CHECKPOINT_PATH_SMPLX
+            checkpoint_path = CHECKPOINT_PATH_SMPLX
+        else:
+            raise ValueError("model_type must be 'smpl' or 'smplx'")
+        model = CameraHMR.load_from_checkpoint(checkpoint_path, strict=False, model_type=self.model_type)
         model = model.to(self.device)
         model.eval()
         return model
     
     def init_detector(self, threshold):
-
+        from core.constants import DETECTRON_CFG, DETECTRON_CKPT
         detectron2_cfg = LazyConfig.load(str(DETECTRON_CFG))
         detectron2_cfg.train.init_checkpoint = DETECTRON_CKPT
         for i in range(3):
@@ -85,7 +103,7 @@ class HumanMeshEstimator:
         return cam_t
 
     def get_output_mesh(self, params, pred_cam, batch):
-        smpl_output = self.smpl_model(**{k: v.float() for k, v in params.items()})
+        smpl_output = self.body_model(**{k: v.float() for k, v in params.items()})
         pred_keypoints_3d = smpl_output.joints
         pred_vertices = smpl_output.vertices
         img_h, img_w = batch['img_size'][0]
@@ -126,7 +144,7 @@ class HumanMeshEstimator:
         overlay_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}{img_ext}')
         smpl_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.smpl')
         mesh_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.obj')
-
+        print(img_path)
         # Detect humans in the image
         det_out = self.detector(img_cv2)
         det_instances = det_out['instances']
@@ -148,14 +166,14 @@ class HumanMeshEstimator:
 
             output_vertices, output_joints, output_cam_trans = self.get_output_mesh(out_smpl_params, out_cam, batch)
 
-            mesh = trimesh.Trimesh(output_vertices[0].cpu().numpy() , self.smpl_model.faces,
+            mesh = trimesh.Trimesh(output_vertices[0].cpu().numpy() , self.body_model.faces,
                             process=False)
             mesh.export(mesh_fname)
 
             # Render overlay
             focal_length = (focal_length_[0], focal_length_[0])
             pred_vertices_array = (output_vertices + output_cam_trans.unsqueeze(1)).detach().cpu().numpy()
-            renderer = Renderer(focal_length=focal_length[0], img_w=img_w, img_h=img_h, faces=self.smpl_model.faces, same_mesh_color=True)
+            renderer = Renderer(focal_length=focal_length[0], img_w=img_w, img_h=img_h, faces=self.body_model.faces, same_mesh_color=True)
             front_view = renderer.render_front_view(pred_vertices_array, bg_img_rgb=img_cv2.copy())
             final_img = front_view
             # Write overlay

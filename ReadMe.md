@@ -9,8 +9,11 @@
 
 🌐 [**Project Page**](https://camerahmr.is.tue.mpg.de) | 📄 [**ArXiv Paper**](https://arxiv.org/abs/2411.08128) | 🎥 [**Video Results**](https://youtu.be/aDmfAxYLV2w)
 
----
+--- 
 
+###  **Looking for SMPL-X / BEDLAM2 instructions?** See our [BEDLAM2 documentation](docs/bedlam2.md). 
+
+---
 ![](teaser/teaser.png)  
 *Figure: CameraHMR Results*
 
@@ -24,6 +27,7 @@
 - **CameraHMR Training and Evaluation Code**
 - **DenseKP Code**
 - **CamSMPLify Code**  
+- **BEDLAM2 Training and Demo Code**
 
 
 ## **Installation**

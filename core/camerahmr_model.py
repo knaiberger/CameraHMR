@@ -1,16 +1,24 @@
 import torch
 import pytorch_lightning as pl
 from .backbones import create_backbone
-from .heads.smpl_head_cliff import build_smpl_head
 from .constants import NUM_POSE_PARAMS
 
 class CameraHMR(pl.LightningModule):
 
-    def __init__(self):
+    def __init__(self, model_type='smpl'):
 
         super().__init__()
+        self.model_type = model_type
         self.backbone = create_backbone()
-        self.smpl_head = build_smpl_head()
+        
+        if model_type == 'smpl':
+            from .heads.smpl_head_cliff import build_smpl_head
+            self.smpl_head = build_smpl_head()
+        elif model_type == 'smplx':
+            from .heads.smplx_head_cliff_with_hands import build_smplx_head
+            self.smplx_head = build_smplx_head()
+        else:
+            raise ValueError("model_type must be 'smpl' or 'smplx'")
 
     def forward(self, batch):
         x = batch['img']
@@ -29,13 +37,19 @@ class CameraHMR(pl.LightningModule):
         bbox_info[:, 2] /= cam_intrinsics[:, 0, 0]
         bbox_info = bbox_info.float()
 
-        # Get SMPL parameters and camera prediction from the SMPLX head
-        pred_smpl_params, pred_cam, _, _ = self.smpl_head(conditioning_feats, bbox_info=bbox_info)
+        # Get SMPL parameters and camera prediction from the head
+        if self.model_type == 'smpl':
+            pred_smpl_params, pred_cam, _, _ = self.smpl_head(conditioning_feats, bbox_info=bbox_info)
+        else: # smplx
+            pred_smpl_params, pred_cam, _ = self.smplx_head(conditioning_feats, bbox_info=bbox_info)
 
         # Reshape SMPL parameter outputs
         pred_smpl_params['global_orient'] = pred_smpl_params['global_orient'].view(batch_size, -1, 3, 3)
         pred_smpl_params['body_pose'] = pred_smpl_params['body_pose'].view(batch_size, -1, 3, 3)[:, :NUM_POSE_PARAMS]  # Only use first 21 joints for now
         pred_smpl_params['betas'] = pred_smpl_params['betas'].view(batch_size, -1)
+        if self.model_type == 'smplx':
+            pred_smpl_params['left_hand_pose'] = pred_smpl_params['left_hand_pose'].view(batch_size, -1, 3, 3)
+            pred_smpl_params['right_hand_pose'] = pred_smpl_params['right_hand_pose'].view(batch_size, -1, 3, 3)
 
 
         return pred_smpl_params, pred_cam, fl_h

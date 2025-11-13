@@ -19,9 +19,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from yacs.config import CfgNode
 from core.configs import dataset_config
-from core.constants import CAM_MODEL_CKPT, CHECKPOINT_PATH
 from core.datasets import DataModule
-from core.camerahmr_trainer import CameraHMR
 from core.cam_model.fl_net import FLNet
 
 from core.utils.pylogger import get_pylogger
@@ -37,9 +35,25 @@ warnings.filterwarnings("ignore", category=UserWarning)
 def eval(cfg: DictConfig) -> Tuple[dict, dict]:
     # Load dataset config
     dataset_cfg = dataset_config()
+    model_type = cfg.get('model_type', 'smpl')
 
     datamodule = DataModule(cfg, dataset_cfg)
-    model = CameraHMR.load_from_checkpoint(CHECKPOINT_PATH, strict=False)
+    # Setup model
+    if cfg.MODEL.TYPE == 'smpl':
+        from core.constants import CHECKPOINT_PATH
+        from core.camerahmr_trainer_smpl import CameraHMR
+        checkpoint_path = CHECKPOINT_PATH  
+    elif cfg.MODEL.TYPE  == 'smplx':
+        from core.constants import CHECKPOINT_PATH_SMPLX
+        from core.camerahmr_trainer_smplx import CameraHMR
+        checkpoint_path = CHECKPOINT_PATH_SMPLX
+    else:
+        raise ValueError(f"Unknown model type: {cfg.MODEL.TYPE}")
+        
+
+    model = CameraHMR.load_from_checkpoint(checkpoint_path, strict=False)
+    
+    from core.constants import CAM_MODEL_CKPT
     cam_model_checkpoint = torch.load(CAM_MODEL_CKPT)['state_dict']
     model.cam_model.load_state_dict(cam_model_checkpoint)
 

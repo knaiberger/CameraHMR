@@ -3,8 +3,7 @@ from typing import Optional
 import torch
 import pytorch_lightning as pl
 from yacs.config import CfgNode
-from .dataset_train import DatasetTrain
-from .dataset_val import DatasetVal
+
 
 class DataModule(pl.LightningDataModule):
 
@@ -23,6 +22,10 @@ class DataModule(pl.LightningDataModule):
         self.val_dataset = self.val_dataset_prepare()
 
     def train_dataset_prepare(self):
+        if self.cfg.MODEL.TYPE == 'smplx':
+            from .dataset_train_hands import DatasetTrain
+        else:
+            from .dataset_train import DatasetTrain
         if self.cfg.DATASETS.DATASETS_AND_RATIOS:
             dataset_names = self.cfg.DATASETS.DATASETS_AND_RATIOS.split('_')
             dataset_list = [DatasetTrain(self.cfg, ds) for ds in dataset_names]
@@ -32,6 +35,10 @@ class DataModule(pl.LightningDataModule):
             return None
 
     def val_dataset_prepare(self):
+        if self.cfg.MODEL.TYPE == 'smplx':
+            from .dataset_val_hands import DatasetVal
+        else:
+            from .dataset_val import DatasetVal
         dataset_names = self.cfg.DATASETS.VAL_DATASETS.split('_')
         dataset_list = [DatasetVal(self.cfg, ds, is_train=False) for ds in dataset_names]
         return dataset_list

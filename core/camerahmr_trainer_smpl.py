@@ -29,6 +29,20 @@ from .constants import (
 )
 
 log = get_pylogger(__name__)
+def scale_and_translation_transform_batch(P, T):
+    P = P.detach().cpu().numpy()
+    T = T.detach().cpu().numpy()
+    P_mean = np.mean(P, axis=1, keepdims=True)
+    P_trans = P - P_mean
+    P_scale = np.sqrt(np.sum(P_trans ** 2, axis=(1, 2), keepdims=True) / P.shape[1])
+    P_normalised = P_trans / P_scale
+
+    T_mean = np.mean(T, axis=1, keepdims=True)
+    T_scale = np.sqrt(np.sum((T - T_mean) ** 2, axis=(1, 2), keepdims=True) / T.shape[1])
+
+    P_transformed = P_normalised * T_scale + T_mean
+
+    return P_transformed
 
 class CameraHMR(pl.LightningModule):
     """
@@ -145,6 +159,7 @@ class CameraHMR(pl.LightningModule):
         pred_smpl_params['body_pose'] = pred_smpl_params['body_pose'].reshape(batch_size, -1, 3, 3)
         pred_smpl_params['betas'] = pred_smpl_params['betas'].reshape(batch_size, -1)
         smpl_output = self.smpl_layer(**{k: v.float() for k,v in pred_smpl_params.items()}, pose2rot=False)
+
         if train:
             smpl_output_gt = self.smpl(**{k: v.float() for k,v in batch['smpl_params'].items()})
             batch['gt_vertices'] = smpl_output_gt.vertices
@@ -197,18 +212,18 @@ class CameraHMR(pl.LightningModule):
 
 
         output['pred_keypoints_2d'] = joints2d.reshape(batch_size, -1, 2)
-        import numpy as np
 
-     
+        # self.perspective_projection_vis(batch, output) 
         return output, fl_h
 
     def perspective_projection_vis(self, input_batch, output, max_save_img=1):
         import os
         import cv2
 
-
-        translation = input_batch['translation'].detach()[:,:3]
-        vertices = input_batch['gt_vertices'].detach()
+        translation = output['pred_cam_t'].detach()
+        vertices = output['pred_vertices'].detach()
+        #translation = input_batch['translation'].detach()[:,:3]
+        #vertices = input_batch['gt_vertices'].detach()
         for i in range(len(input_batch['imgname'])):
             cy, cx = input_batch['img_size'][i] // 2
             img_h, img_w = cy*2, cx*2
@@ -443,7 +458,67 @@ class CameraHMR(pl.LightningModule):
                 pred_keypoints_3d.float().cpu().numpy(),
                 gt_keypoints_3d.float().cpu().numpy(),
                 reduction=None
+            )            
+        elif 'shape-eval' in dataset_names[0]:
+            gt_cam_vertices = batch['vertices']
+            pred_cam_vertices = output['pred_vertices']
+            gt_keypoints_3d = batch['keypoints_3d']
+            pred_keypoints_3d = torch.matmul(self.smpl.J_regressor, pred_cam_vertices)
+            pred_pelvis = (pred_keypoints_3d[:, [1], :] + pred_keypoints_3d[:, [2], :]) / 2.0
+            gt_pelvis = (gt_keypoints_3d[:, [1], :] + gt_keypoints_3d[:, [2], :]) / 2.0
+            gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
+            gt_cam_vertices = gt_cam_vertices - gt_pelvis
+            pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
+            pred_cam_vertices = pred_cam_vertices - pred_pelvis 
+            pred_vertices_aligned = torch.tensor(
+                scale_and_translation_transform_batch(pred_cam_vertices, gt_cam_vertices)
             )
+            gt_np = gt_cam_vertices.detach().cpu().numpy()
+            pred_np = pred_vertices_aligned.detach().cpu().numpy()
+            r_error = np.linalg.norm(gt_np - pred_np, axis=-1)  # shape: (B, N)
+            # for i in range(batch_size):
+            #     import os
+            #     imgname = batch['imgname'][i]
+            #     save_filename = os.path.join('.', f'{self.global_step:08d}_{i:02d}_{os.path.basename(imgname)}')
+            #     import trimesh
+            #     # Take only the first sample (index 0)
+            #     gt_mesh = trimesh.Trimesh(
+            #         vertices=gt_cam_vertices[i].detach().cpu().numpy(),
+            #         faces=self.smpl.faces,
+            #         process=False
+            #     )
+            #     gt_mesh.export(save_filename+ "_gt.obj")
+
+            #     pred_mesh = trimesh.Trimesh(
+            #         vertices=pred_cam_vertices[i].detach().cpu().numpy(),
+            #         faces=self.smpl.faces,
+            #         process=False
+            #     )
+            #     pred_mesh.export(save_filename+ "_pred.obj")
+            import trimesh
+            import os
+
+            for i in range(batch_size):
+                imgname = batch['imgname'][i]
+                save_filename = os.path.join('.', f'{self.global_step:08d}_{i:02d}_{os.path.basename(imgname)}')
+
+                gt_mesh = trimesh.Trimesh(
+                    vertices=gt_cam_vertices[i].detach().cpu().numpy(),
+                    faces=self.smpl.faces,
+                    process=False
+                )
+
+                pred_mesh = trimesh.Trimesh(
+                    vertices=pred_vertices_aligned[i].detach().cpu().numpy(),
+                    faces=self.smpl.faces,
+                    process=False
+                )
+
+                # Combine meshes
+                combined_mesh = trimesh.util.concatenate([gt_mesh, pred_mesh])
+
+                # Export combined OBJ
+                combined_mesh.export(save_filename + "_combined.obj")
 
         else:
             smpl_output_gt = self.smpl_gt(**{k: v.float() for k,v in batch['smpl_params'].items()})

@@ -8,15 +8,15 @@ def make_parser():
         help="Path to input image folder.")
     parser.add_argument("--output_folder", "--output_folder", type=str,
         help="Path to folder output folder.")
+    parser.add_argument("--model_type", type=str, default='smpl', choices=['smpl', 'smplx'],
+        help="Type of model to use.")
     return parser
 
 def main():
-
     parser = make_parser()
     args = parser.parse_args()
-    estimator = HumanMeshEstimator()
+    estimator = HumanMeshEstimator(model_type=args.model_type)
     estimator.run_on_images(args.image_folder, args.output_folder)
     
 if __name__=='__main__':
     main()
-
