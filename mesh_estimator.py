@@ -139,6 +139,7 @@ class HumanMeshEstimator:
 
     def process_image(self, img_path, output_img_folder, i):
         img_cv2 = cv2.imread(str(img_path))
+        img_cv2 = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
         
         fname, img_ext = os.path.splitext(os.path.basename(img_path))
         overlay_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}{img_ext}')
