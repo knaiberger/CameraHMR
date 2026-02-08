@@ -5,6 +5,10 @@ import torch
 import smplx
 import trimesh
 import numpy as np
+import pickle
+import time
+
+
 from glob import glob
 from torchvision.transforms import Normalize
 from detectron2.config import LazyConfig
@@ -137,14 +141,33 @@ class HumanMeshEstimator:
         smpl.body_pose[0][0][:] = np.zeros(3)
 
 
-    def process_image(self, img_path, output_img_folder, i):
+    def process_image(self, img_path, output_img_folder, i,cam_type,orig_cam_int = None,cam_int = None,camera_k = np.array([0.0,0.0,0.0,0.0,0.0]),camera_name = "",cam_bool = False):
+
         img_cv2 = cv2.imread(str(img_path))
         img_cv2 = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
+        if (cam_bool):
+            print("undistorted")
+            img_cv2 = cv2.undistort(img_cv2,orig_cam_int,camera_k,None)
         
+        overlay_path = "overlay"
+        overlay_mask_path = "overlay_mask"
+        camerahmr_path = "smpl"
+        os.makedirs(os.path.join(output_img_folder,overlay_path), exist_ok=True)
+        os.makedirs(os.path.join(output_img_folder,overlay_mask_path), exist_ok=True)
+        os.makedirs(os.path.join(output_img_folder,camerahmr_path), exist_ok=True)
+
+        if(cam_type == "multiple"):
+            camera_path = os.path.join(output_img_folder,camera_name[:-4])
+            os.makedirs(camera_path, exist_ok=True)
+
         fname, img_ext = os.path.splitext(os.path.basename(img_path))
-        overlay_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}{img_ext}')
-        smpl_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.smpl')
-        mesh_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}_{i:06d}.obj')
+        overlay_fname = os.path.join(output_img_folder,overlay_path, f'{os.path.basename(fname)}{img_ext}')
+        overlay_mask_fname = os.path.join(output_img_folder,overlay_mask_path, f'{os.path.basename(fname)}{img_ext}')
+        camerahmr_fname = os.path.join(output_img_folder,camerahmr_path, f'{os.path.basename(fname)}.npz')
+        smpl_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}.smpl')
+        mesh_fname = os.path.join(output_img_folder, f'{os.path.basename(fname)}.obj')
+        if(cam_type == "multiple"):
+            camera_fname = os.path.join(camera_path, f'{os.path.basename(fname)}.pkl')
         print(img_path)
         # Detect humans in the image
         det_out = self.detector(img_cv2)
@@ -155,7 +178,8 @@ class HumanMeshEstimator:
         bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
 
         # Get Camera intrinsics using HumanFoV Model
-        cam_int = self.get_cam_intrinsics(img_cv2)
+        if(cam_type == "multiple"):
+            cam_int = self.get_cam_intrinsics(img_cv2)
         dataset = Dataset(img_cv2, bbox_center, bbox_scale, cam_int, False, img_path)
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False, num_workers=10)
 
@@ -165,11 +189,46 @@ class HumanMeshEstimator:
             with torch.no_grad():
                 out_smpl_params, out_cam, focal_length_ = self.model(batch)
 
+            print("out cam")
+            print(out_cam)
+
             output_vertices, output_joints, output_cam_trans = self.get_output_mesh(out_smpl_params, out_cam, batch)
 
-            mesh = trimesh.Trimesh(output_vertices[0].cpu().numpy() , self.body_model.faces,
-                            process=False)
-            mesh.export(mesh_fname)
+
+            #mesh = trimesh.Trimesh(output_vertices[0].cpu().numpy() , self.body_model.faces,
+#                            process=False)
+            #mesh.export(mesh_fname)
+
+            # get camera
+            if(cam_type == "multiple"):
+                camera_params = {'camera_k': camera_k,'camera_rt': np.array([0.0,0.0,0.0]),'camera_c': np.array([img_w.cpu().numpy()//2,img_h.cpu().numpy()//2]),'camera_f':np.array([focal_length_[0].cpu().numpy(),focal_length_[0].cpu().numpy()]),'height': img_h.cpu().numpy(),'width': img_w.cpu().numpy(), 'camera_t': np.array([0.0,0.0,0.0])}
+                
+                with open(camera_fname, 'wb') as f:
+                    pickle.dump(camera_params, f)
+            elif(fname == "000000"):
+                camera_params = {'camera_k': camera_k,'camera_rt': np.array([0.0,0.0,0.0]),'camera_c': np.array([img_w.cpu().numpy()//2,img_h.cpu().numpy()//2]),'camera_f':np.array([focal_length_[0].cpu().numpy(),focal_length_[0].cpu().numpy()]),'height': img_h.cpu().numpy(),'width': img_w.cpu().numpy(), 'camera_t': np.array([0.0,0.0,0.0])}
+                with open(os.path.join(output_img_folder,camera_name), 'wb') as f:
+                    pickle.dump(camera_params, f)
+
+            # get pose_body and pose_hand
+            count = 0
+            body_pose = np.empty(63)
+            hand_pose = np.empty(6)
+            for i in out_smpl_params['body_pose'][0]:
+                vec, jacobian = cv2.Rodrigues(i.cpu().numpy())
+                if (count < 21):
+                    body_pose[count * 3:count * 3 + 3] = vec[:, 0]
+                else:
+                    hand_pose[(count - 21) * 3:(count - 21) * 3 + 3] = vec[:, 0]
+                count += 1
+
+            # get root_orientation
+            root_orient, jacobian = cv2.Rodrigues(out_smpl_params['global_orient'][0,0,:,:].cpu().numpy())
+
+
+            # save trans, betas, root_orient, pose_body and pose_hand
+            np.savez(camerahmr_fname,trans=output_cam_trans[0].cpu().numpy(),betas=out_smpl_params['betas'].cpu().numpy(),
+                      root_orient = root_orient[:,0],pose_hand = hand_pose,pose_body = body_pose)
 
             # Render overlay
             focal_length = (focal_length_[0], focal_length_[0])
@@ -177,15 +236,100 @@ class HumanMeshEstimator:
             renderer = Renderer(focal_length=focal_length[0], img_w=img_w, img_h=img_h, faces=self.body_model.faces, same_mesh_color=True)
             front_view = renderer.render_front_view(pred_vertices_array, bg_img_rgb=img_cv2.copy())
             final_img = front_view
+
             # Write overlay
             cv2.imwrite(overlay_fname, final_img)
             renderer.delete()
+            
+            # Render overlay mask
+            renderer = Renderer(focal_length=focal_length[0], img_w=img_w, img_h=img_h, faces=self.body_model.faces, same_mesh_color=True)
+            front_view = renderer.render_front_view(pred_vertices_array, bg_color=(0., 0., 0., 0.))
+            final_img = front_view
+
+            # Write overlay mask
+            cv2.imwrite(overlay_mask_fname, final_img)
+            renderer.delete()
 
 
-    def run_on_images(self, image_folder, out_folder):
+    def get_cam_int(self,img_path,cam_bool= False,orig_cam_int = None,camera_k = None):
+        img_cv2 = cv2.imread(str(img_path))
+        img_cv2 = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
+        if(cam_bool):
+            print("undistorted")
+            img_cv2 = cv2.undistort(img_cv2,orig_cam_int,camera_k,None)
+        # Detect humans in the image
+        det_out = self.detector(img_cv2)
+        det_instances = det_out['instances']
+        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+        boxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+        bbox_scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0 
+        bbox_center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+
+        # Get Camera intrinsics using HumanFoV Model
+        cam_int = self.get_cam_intrinsics(img_cv2)
+        return cam_int
+
+    #ref: https://github.com/mikeqzy/3dgs-avatar-release/blob/main/dataset/people_snapshot.py
+    def get_KRTD(self,camera):
+        K = np.zeros([3, 3], dtype=np.float32)
+        K[0, 0] = camera['camera_f'][0]
+        K[1, 1] = camera['camera_f'][1]
+        K[:2, 2] = camera['camera_c']
+        K[2, 2] = 1
+        R = np.eye(3, dtype=np.float32)
+        T = np.zeros([3, 1], dtype=np.float32)
+        D = camera['camera_k']
+
+        return K, R, T, D
+
+
+
+    def run_on_images(self, image_folder, out_folder, camera_type, camera_path, camera_name):
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
+        cam_bool = False
+        orig_cam_int = None
+        camera_k = None
+        if(camera_path != ""):
+            with open(camera_path, 'rb') as f:
+                camera = pickle.load(f, encoding='latin1')
+            orig_cam_int,_,_,camera_k = self.get_KRTD(camera)
+            cam_bool = True
+        else: 
+            camera_k = np.array([0.0,0.0,0.0,0.0,0.0])
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp']
         images_list = [image for ext in image_extensions for image in glob(os.path.join(image_folder, ext))]
-        for ind, img_path in enumerate(images_list):
-            self.process_image(img_path, out_folder, ind)
+        images_list = sorted(images_list)
+        if(camera_type == "multiple"):
+            for ind, img_path in enumerate(images_list):
+                self.process_image(img_path, out_folder, ind,camera_type,orig_cam_int = orig_cam_int,camera_k = camera_k,camera_name= camera_name,cam_bool = cam_bool)
+        elif(camera_type == "first"):
+            start = time.time()
+            cam_int = self.get_cam_int(images_list[0],cam_bool,orig_cam_int,camera_k)
+            for ind, img_path in enumerate(images_list):
+                self.process_image(img_path, out_folder, ind,camera_type,orig_cam_int = orig_cam_int ,cam_int= cam_int,camera_k = camera_k,camera_name= camera_name,cam_bool = cam_bool)
+            end = time.time()
+            print("Time to get the smpl data: " + str(end-start))
+        elif(camera_type == "average"):
+            cam_int = self.get_cam_int(images_list[0],cam_bool,orig_cam_int,camera_k)
+            for i in images_list[1:]:
+                print(cam_int)
+                cam_int += self.get_cam_int(i,cam_bool,orig_cam_int,camera_k)
+            cam_int = cam_int / len(images_list)
+            for ind, img_path in enumerate(images_list):
+                self.process_image(img_path, out_folder, ind, camera_type,orig_cam_int = orig_cam_int ,cam_int= cam_int,camera_k = camera_k,camera_name= camera_name,cam_bool = cam_bool)
+        elif(camera_type == "calibrated_undistorted"):
+            if(camera_path == ""):
+                print("need camera_path as input")
+                return 
+            for ind, img_path in enumerate(images_list):
+                self.process_image(img_path, out_folder, ind,camera_type, orig_cam_int = orig_cam_int ,cam_int= orig_cam_int,camera_k = camera_k,camera_name= camera_name,cam_bool = True)
+        elif(camera_type == "calibrated"):
+            camera_k = np.array([0.0,0.0,0.0,0.0,0.0])
+            if(camera_path == ""):
+                print("need camera_path as input")
+                return 
+            for ind, img_path in enumerate(images_list):
+                self.process_image(img_path, out_folder, ind,camera_type, orig_cam_int = orig_cam_int,cam_int= orig_cam_int,camera_k = camera_k,camera_name= camera_name,cam_bool = False)
+        else:
+            print("This Camera Type doesn´t exist")
